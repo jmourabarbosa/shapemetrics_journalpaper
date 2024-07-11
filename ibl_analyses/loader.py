@@ -61,6 +61,8 @@ class IBLSession:
 
 
     def load_session(self):
+        if self.params["verbose"]: print("loading session: ", self.eid)
+        
         trials = self.one.load_object(self.eid,'trials',collection='alf')
         try:
             sl = SpikeSortingLoader(
@@ -81,6 +83,7 @@ class IBLSession:
     
     
     def load_session_data(self):
+        if self.params["verbose"]: print("loading session data: ", self.eid)
         
         spikes, clusters, channels = self.data[self.params['probe']].values()
 
