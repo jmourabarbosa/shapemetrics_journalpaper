@@ -6,11 +6,8 @@
 
 from ibllib.atlas.regions import BrainRegions
 from ibllib.atlas import AllenAtlas
-
 from brainbox.io.one import SpikeSortingLoader
-
 from one.api import ONE
-
 import brainbox
 
 from pathlib import Path
@@ -25,12 +22,9 @@ import utils
 warnings.filterwarnings(
     "ignore", 
     category=DeprecationWarning
-) 
+)
 
 import yaml
-import sys
-
-sys.path.insert(1,'../')
 
 # %%
 class IBLSession:
@@ -53,8 +47,8 @@ class IBLSession:
         )
         self.brain_atlas = AllenAtlas()
 
-        # self.load_session()
-        # self.load_session_data()
+        self.load_session()
+        self.load_session_data()
 
     def check_rep(self,spikes,clusters):
          # spikes.clusters provides ids which match clusters['cluster_id']
@@ -186,20 +180,14 @@ class IBLSession:
 
     
 # %%
+import loader
 @ray.remote
-class IBLSessionRemote(IBLSession):
+class IBLSessionRemote(loader.IBLSession):
     pass
 
 # %%
 class IBLDataLoader:
-    def load_sessions(self):
-        refs = [sess.load_session.remote() for sess in self.sessions]
-        self.data = ray.get(refs)
-
-        refs = [sess.load_session_data.remote() for sess in self.sessions]
-        ray.get(refs)
-
-    def __init__(self,params,eids=None):
+    def __init__(self,params,eids=None,parallel=False):
         # params: file,tag,probe,sessions,areas
 
         cache_dir = Path(params['file'])
@@ -223,14 +211,29 @@ class IBLDataLoader:
         self.eids = eids
         self.probe = params['probe']
         self.areas = params['areas']
-
         
-        self.sessions = [
-            IBLSessionRemote.remote(
-                {**params,**{'eid':eid}}
-            ) for eid in eids
-        ]
-        self.load_sessions()
+
+        if parallel:
+            self.sessions = [
+                IBLSessionRemote.remote(
+                    {**params,**{'eid':eid}}
+                ) for eid in eids
+            ]
+            refs = [sess.load_session.remote() for sess in self.sessions]
+            self.data = ray.get(refs)
+
+            refs = [sess.load_session_data.remote() for sess in self.sessions]
+            ray.get(refs)
+
+        else:
+            self.sessions = [
+                IBLSession(
+                    {**params,**{'eid':eid}}
+                ) for eid in eids
+            ]
+            self.data = [sess.load_session() for sess in self.sessions]
+            [sess.load_session_data() for sess in self.sessions]
+            
 
         valid = [i for i in range(len(self.data)) if bool(self.data[i][params['probe']])]
         self.eids = [eids[i] for i in valid]
@@ -238,14 +241,13 @@ class IBLDataLoader:
         self.data = [self.data[i] for i in valid]
 
 
-
     def load_train_data(self):
-        return zip([sess.load_train_data() for sess in self.sessions])
+        return zip(*[sess.load_train_data() for sess in self.sessions])
         
     
     def load_test_data(self):
-        return zip([sess.load_test_data() for sess in self.sessions])
+        return zip(*[sess.load_test_data() for sess in self.sessions])
         
     
     def load_validation_data(self):
-        return zip([sess.load_validation_data() for sess in self.sessions])
+        return zip(*[sess.load_validation_data() for sess in self.sessions])
