@@ -169,9 +169,27 @@ class IBLSession:
              },
             self.params['props'],
             self.params['seeds']
-        ) 
+        )
+
+        self.y = y
+        self.x = x
+        self.reaction_times = reaction_times
+        self.correct = correct
         
-    
+    def new_fold(self,seeds=None):
+        if seeds is None:
+            seeds = {'train': np.random.randint(0,10000), 'test': np.random.randint(0,10000), 'validation': np.random.randint(0,10000)}
+
+        self.data = utils.split_data_cv(
+            {
+                'y':self.y,
+                'x':self.x,
+                'reaction_times':self.reaction_times,
+                'correct':self.correct
+             },
+            self.params['props'],
+            seeds
+        )
     def load_train_data(self):
         return self.data['x_train'], self.data['y_train'], self.data['reaction_times_train'], self.data['correct_train']
     
@@ -254,3 +272,13 @@ class IBLDataLoader:
     
     def load_validation_data(self):
         return zip(*[sess.load_validation_data() for sess in self.sessions])
+
+    def new_folds(self,n_folds=10,seeds=None):
+        all_train_data=[]
+        all_test_data=[]
+        for _ in range(n_folds):
+            [sess.new_fold(seeds) for sess in self.sessions]
+            all_train_data.append(self.load_train_data())
+            all_test_data.append(self.load_test_data())
+
+        return all_train_data, all_test_data

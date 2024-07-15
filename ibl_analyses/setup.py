@@ -44,14 +44,14 @@ params = {
     'probe': 'probe00',
     'sessions': [0,5,6],
     'areas': ['CA1','DG','LP','PO','VISa'],
-    'props':{'train':.6,'test':.2,'validation':.2},
+    'props':{'train':.5,'test':.5,'validation':0},
     'seeds':{'train':0,'test':1,'validation':2},
     'n_neurons': None, # all neurons
     'n_trials': None, # all trials
     'pre_time':0,
     'post_time':.4,
     'n_bins': 10,
-    'align_to': 'responses',
+    'align_to': 'response',
     'train_trial_prop':.9, 
     'train_condition_prop':1, 
     'seed':0,
