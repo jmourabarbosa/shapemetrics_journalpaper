@@ -18,13 +18,14 @@ import warnings
 import ray
 
 import utils
+import jax
+jax.config.update("jax_platform_name", "cpu")
 
 warnings.filterwarnings(
     "ignore", 
     category=DeprecationWarning
 )
 
-import yaml
 
 # %%
 class IBLSession:
@@ -37,7 +38,8 @@ class IBLSession:
         self.params = params
 
         cache_dir = Path(params['file'])
-        cache_dir = cache_dir / params['tag']
+        cache_dir = cache_dir/params['tag']
+
         self.one = ONE(
             base_url="https://openalyx.internationalbrainlab.org", 
             username='intbrainlab',
@@ -89,7 +91,7 @@ class IBLSession:
 
         trials = self.data['trials']
 
-        bin_size = (self.params['post_time']-self.params['pre_time'])/self.params['n_bins']
+        bin_size = (self.params['post_time']+self.params['pre_time'])/self.params['n_bins']
 
         acronym_allen = self.data[self.params['probe']]['clusters']['acronym']
         acronym_beryl = BrainRegions().acronym2acronym(acronym_allen, 'Beryl')
@@ -160,13 +162,12 @@ class IBLSession:
         if self.params['n_neurons'] is not None:
             y = y[:,:,:self.params['n_neurons']]
 
-        self.data = utils.split_data_cv(
-            {
+        
+        self.data = split_data_cv({
                 'y':y,
-                'x':x,
                 'reaction_times':reaction_times[:self.params['n_trials'],:],
                 'correct':correct[:self.params['n_trials'],:],
-             },
+            },
             self.params['props'],
             self.params['seeds']
         )
@@ -177,33 +178,35 @@ class IBLSession:
         self.correct = correct
         
     def new_fold(self,seeds=None):
+        # TODO: Might be better to enforce the user to determine the seed
         if seeds is None:
-            seeds = {'train': np.random.randint(0,10000), 'test': np.random.randint(0,10000), 'validation': np.random.randint(0,10000)}
+            seeds = {
+                'train': np.random.randint(0,10000), 
+                'test': np.random.randint(0,10000), 
+                'validation': np.random.randint(0,10000)
+            }
 
-        self.data = utils.split_data_cv(
-            {
+        self.data = split_data_cv({
                 'y':self.y,
-                'x':self.x,
                 'reaction_times':self.reaction_times,
                 'correct':self.correct
-             },
+            },
             self.params['props'],
             seeds
         )
     def load_train_data(self):
-        return self.data['x_train'], self.data['y_train'], self.data['reaction_times_train'], self.data['correct_train']
+        return self.x, self.data['y_train'], self.data['reaction_times_train'], self.data['correct_train']
     
     def load_test_data(self):
-        return self.data['x_test'], self.data['y_test'], self.data['reaction_times_test'], self.data['correct_test']
+        return self.x, self.data['y_test'], self.data['reaction_times_test'], self.data['correct_test']
     
     def load_validation_data(self):
-        return self.data['x_validation'], self.data['y_validation'], self.data['reaction_times_validation'], self.data['correct_validation']
+        return self.x, self.data['y_validation'], self.data['reaction_times_validation'], self.data['correct_validation']
 
     
 # %%
-import loader
 @ray.remote
-class IBLSessionRemote(loader.IBLSession):
+class IBLSessionRemote(IBLSession):
     pass
 
 # %%
@@ -232,19 +235,27 @@ class IBLDataLoader:
         self.eids = eids
         self.probe = params['probe']
         self.areas = params['areas']
-        
+
+        self.parallel = parallel
 
         if parallel:
+            ray.init(
+                ignore_reinit_error=True,
+                runtime_env={'working_dir': '../'}
+            )
             self.sessions = [
                 IBLSessionRemote.remote(
                     {**params,**{'eid':eid}}
                 ) for eid in eids
             ]
+            
+            
             refs = [sess.load_session.remote() for sess in self.sessions]
             self.data = ray.get(refs)
 
             refs = [sess.load_session_data.remote() for sess in self.sessions]
             ray.get(refs)
+
 
         else:
             self.sessions = [
@@ -254,6 +265,7 @@ class IBLDataLoader:
             ]
             self.data = [sess.load_session() for sess in self.sessions]
             [sess.load_session_data() for sess in self.sessions]
+
             
 
         valid = [i for i in range(len(self.data)) if bool(self.data[i][params['probe']])]
@@ -261,17 +273,31 @@ class IBLDataLoader:
         self.sessions = [self.sessions[i] for i in valid]
         self.data = [self.data[i] for i in valid]
 
+        
+
 
     def load_train_data(self):
-        return zip(*[sess.load_train_data() for sess in self.sessions])
+        if self.parallel: 
+            return zip(*ray.get([sess.load_train_data.remote() for sess in self.sessions]))
+        else: 
+            return zip(*[sess.load_train_data() for sess in self.sessions])
+        
         
     
     def load_test_data(self):
-        return zip(*[sess.load_test_data() for sess in self.sessions])
+        if self.parallel: 
+            return zip(*ray.get([sess.load_test_data.remote() for sess in self.sessions]))
+        else: 
+            return zip(*[sess.load_test_data() for sess in self.sessions])
+        
         
     
     def load_validation_data(self):
-        return zip(*[sess.load_validation_data() for sess in self.sessions])
+        if self.parallel: 
+            return  zip(*ray.get([sess.load_validation_data.remote() for sess in self.sessions]))
+        else: 
+            return zip(*[sess.load_validation_data() for sess in self.sessions])
+        
 
     def new_folds(self,n_folds=10,seeds=None):
         all_train_data=[]
@@ -282,3 +308,43 @@ class IBLDataLoader:
             all_test_data.append(self.load_test_data())
 
         return all_train_data, all_test_data
+    
+
+
+
+# %%
+def split_data_cv(data,props,seeds):
+    # props: train, validation, test
+    # seeds: test, validation
+    # data: y (possibly mu, sigma, F, mu_g, sigma_g)
+
+    assert 'train' in props.keys() and 'test' in props.keys() and 'validation' in props.keys()
+    assert props['train'] + props['test'] + props['validation'] == 1
+    assert 'test' in seeds.keys() and 'validation' in seeds.keys()
+    assert 'y' in data.keys()
+     
+    N,M,D = data['y'].shape
+    
+    trial_indices = jax.random.permutation(
+        jax.random.PRNGKey(seeds['test']),
+        np.arange(N)
+    )
+
+    test_trials = trial_indices[-int(props['test']*N):]
+
+    train_trials = jax.random.choice(
+        jax.random.PRNGKey(seeds['validation']),
+        shape=(int(N*props['train']),),
+        a=trial_indices[:-int(props['test']*N)],
+        replace=False
+    ).sort()
+
+    validation_trials = np.setdiff1d(trial_indices[:-int(props['test']*N)],train_trials).tolist()
+
+    out = {}
+    for k in data.keys():
+        out[k+'_train'] = data[k][train_trials,...]
+        out[k+'_test'] = data[k][test_trials,...]
+        out[k+'_validation'] = data[k][validation_trials,...]
+    
+    return out
