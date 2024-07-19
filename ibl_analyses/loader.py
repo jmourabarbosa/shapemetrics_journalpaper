@@ -16,7 +16,7 @@ import pandas as pd
 from typing import Dict
 import warnings
 import ray
-
+import tqdm
 import utils
 import jax
 jax.config.update("jax_platform_name", "cpu")
@@ -98,9 +98,11 @@ class IBLSession:
 
         acronym_bool = np.isin(acronym_beryl, self.params['areas'])
 
-        trial_indices = trials.probabilityLeft != .5 # exclude 50-50 trials
+        if 'prior' in self.params.keys(): #.2, .5, .8
+            trial_indices = trials.probabilityLeft == self.params['prior']
+        else:
+            trial_indices = trials.probabilityLeft !=.5# exclude 50-50 trials
         
-
         y, t = brainbox.singlecell.bin_spikes2D(
             spike_times=spikes.times, 
             spike_clusters=spikes.clusters, 
@@ -112,7 +114,6 @@ class IBLSession:
         )
         
         y = y[:,acronym_bool,:]
-
         reaction_times = trials['response_times'] - trials['stimOn_times']
         correct = trials['feedbackType']
         
@@ -131,12 +132,20 @@ class IBLSession:
             return_counts=True
         )
         n_trials = min(counts)
-        y = np.array([
-            [y[j][:,t_]
-            for j in np.where(indices==i)[0][:n_trials].tolist()] 
-            for i in range(x.shape[0]) for t_ in range(len(t))]
-        ).transpose(1,0,2)
+
+        if self.params['bins_as_conds']:
+            y = np.array([
+                [y[j][:,t_]
+                for j in np.where(indices==i)[0][:n_trials].tolist()] 
+                for i in range(x.shape[0]) for t_ in range(len(t))]
+            ).transpose(1,0,2)
         
+        else:
+            y = np.array([
+                [y[j]
+                for j in np.where(indices==i)[0][:n_trials].tolist()] 
+                for i in range(x.shape[0])]
+            ).transpose(1,0,3,2)
 
         reaction_times = np.array([
             [reaction_times[j]
@@ -152,9 +161,9 @@ class IBLSession:
         
         x = np.array([[x_,t_] for x_ in x.squeeze() for t_ in t])
 
-        y = np.sqrt(
-            y[:,:,np.argsort(y.mean(0).var(0))[::-1]]
-        )
+        #y = np.sqrt(
+        #    y[:,:,np.argsort(y.mean(0).var(0))[::-1]]
+        #)
 
         if self.params['n_trials'] is not None:
             y = y[:self.params['n_trials']]
@@ -162,16 +171,35 @@ class IBLSession:
         if self.params['n_neurons'] is not None:
             y = y[:,:,:self.params['n_neurons']]
 
-        
-        self.data = split_data_cv({
-                'y':y,
-                'reaction_times':reaction_times[:self.params['n_trials'],:],
-                'correct':correct[:self.params['n_trials'],:],
-            },
-            self.params['props'],
-            self.params['seeds']
-        )
+        if self.params['bins_as_conds']:
 
+            self.data = split_data_cv({
+                    'y':y,
+                    'reaction_times':reaction_times[:self.params['n_trials'],:],
+                    'correct':correct[:self.params['n_trials'],:],
+                },
+                self.params['props'],
+                self.params['seeds']
+            )
+        else:
+            
+            keys = ['y_train', 'y_test', 'y_validation', 'reaction_times_train', 
+                    'reaction_times_test', 'reaction_times_validation', 'correct_train', 
+                    'correct_test', 'correct_validation'] # nasty, improve this
+            
+            self.data = {key: [] for key in keys}
+            for ti in range(len(t)):
+                cv_data = split_data_cv({
+                        'y':y[:,:,ti],
+                        'reaction_times':reaction_times[:self.params['n_trials'],:],
+                        'correct':correct[:self.params['n_trials'],:],
+                    },
+                    self.params['props'],
+                    self.params['seeds']
+                )
+                for k in keys:
+                    self.data[k].append(cv_data[k])
+            
         self.y = y
         self.x = x
         self.reaction_times = reaction_times
@@ -185,17 +213,49 @@ class IBLSession:
                 'test': np.random.randint(0,10000), 
                 'validation': np.random.randint(0,10000)
             }
+        if self.params['bins_as_conds']:
 
-        self.data = split_data_cv({
-                'y':self.y,
-                'reaction_times':self.reaction_times,
-                'correct':self.correct
-            },
-            self.params['props'],
-            seeds
-        )
+            self.data = split_data_cv({
+                    'y':self.y,
+                    'reaction_times':self.reaction_times[:self.params['n_trials'],:],
+                    'correct':self.correct[:self.params['n_trials'],:],
+                },
+                self.params['props'],
+                seeds
+            )
+        else:
+            
+            keys = ['y_train', 'y_test', 'y_validation', 'reaction_times_train', 
+                    'reaction_times_test', 'reaction_times_validation', 'correct_train', 
+                    'correct_test', 'correct_validation'] # nasty, improve this
+            
+            self.data = {key: [] for key in keys}
+            for ti in range(self.y.shape[2]):
+                cv_data = split_data_cv({
+                        'y':self.y[:,:,ti],
+                        'reaction_times':self.reaction_times[:self.params['n_trials'],:],
+                        'correct':self.correct[:self.params['n_trials'],:],
+                    },
+                    self.params['props'],
+                    seeds
+                )
+                for k in keys:
+                    self.data[k].append(cv_data[k])
+
     def load_train_data(self):
         return self.x, self.data['y_train'], self.data['reaction_times_train'], self.data['correct_train']
+
+    def load_train_data_avg(self):
+        if self.params['bins_as_conds']:
+            return np.mean(self.data['y_train'],0), np.mean(self.data['correct_train'],0)
+
+        return np.mean(self.data['y_train'],1), np.mean(self.data['correct_train'],1)
+                
+    def load_test_data_avg(self):
+        if self.params['bins_as_conds']:
+            return np.mean(self.data['y_test'],0), np.mean(self.data['correct_test'],0)
+
+        return np.mean(self.data['y_test'],1), np.mean(self.data['correct_test'],1)
     
     def load_test_data(self):
         return self.x, self.data['y_test'], self.data['reaction_times_test'], self.data['correct_test']
@@ -282,7 +342,6 @@ class IBLDataLoader:
         else: 
             return zip(*[sess.load_train_data() for sess in self.sessions])
         
-        
     
     def load_test_data(self):
         if self.parallel: 
@@ -290,6 +349,13 @@ class IBLDataLoader:
         else: 
             return zip(*[sess.load_test_data() for sess in self.sessions])
         
+    
+    def load_train_data_avg(self):
+            return [sess.load_train_data_avg() for sess in self.sessions]
+        
+         
+    def load_test_data_avg(self):
+            return [sess.load_test_data_avg() for sess in self.sessions]
         
     
     def load_validation_data(self):
@@ -309,7 +375,16 @@ class IBLDataLoader:
 
         return all_train_data, all_test_data
     
+    def new_folds_avg(self,n_folds=10,seeds=None):
+        all_train_data=[]
+        all_test_data=[]
+        for _ in tqdm.trange(n_folds):
+            [sess.new_fold(seeds) for sess in self.sessions]
+            all_train_data.append(self.load_train_data_avg())
+            all_test_data.append(self.load_test_data_avg())
 
+        return all_train_data, all_test_data
+    
 
 
 # %%

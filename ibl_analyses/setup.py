@@ -49,11 +49,12 @@ params = {
     'n_neurons': None, # all neurons
     'n_trials': None, # all trials
     'pre_time':0,
-    'post_time':.4,
+    'post_time':0.4,
     'n_bins': 10,
     'align_to': 'response',
     'train_trial_prop':.9, 
     'train_condition_prop':1, 
     'seed':0,
-    'verbose': True
-}
+    'verbose': False,
+    'bins_as_conds': True
+    }
