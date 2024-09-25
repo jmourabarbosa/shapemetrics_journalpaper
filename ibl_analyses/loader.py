@@ -4,6 +4,9 @@
 @author: Amin
 """
 
+import numpy as np
+
+
 from ibllib.atlas.regions import BrainRegions
 from ibllib.atlas import AllenAtlas
 from brainbox.io.one import SpikeSortingLoader
@@ -11,7 +14,6 @@ from one.api import ONE
 import brainbox
 
 from pathlib import Path
-import numpy as np
 import pandas as pd
 from typing import Dict
 import warnings
@@ -19,6 +21,7 @@ import ray
 import tqdm
 import utils
 import jax
+
 jax.config.update("jax_platform_name", "cpu")
 
 warnings.filterwarnings(
@@ -40,13 +43,21 @@ class IBLSession:
         cache_dir = Path(params['file'])
         cache_dir = cache_dir/params['tag']
 
+        # self.one = ONE(
+        #     base_url="https://openalyx.internationalbrainlab.org", 
+        #     username='intbrainlab',
+        #     password="international", 
+        #     silent=True, 
+        #     cache_dir=cache_dir
+        # )
+
         self.one = ONE(
             base_url="https://openalyx.internationalbrainlab.org", 
-            username='intbrainlab',
             password="international", 
             silent=True, 
             cache_dir=cache_dir
         )
+        
         self.brain_atlas = AllenAtlas()
 
         self.load_session()
